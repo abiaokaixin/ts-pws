@@ -1,0 +1,1 @@
+export { binaryInfo } from 'cloakbrowser';

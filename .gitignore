@@ -1,0 +1,4 @@
+.qwen/
+dist/
+node_modules/
+.idea
