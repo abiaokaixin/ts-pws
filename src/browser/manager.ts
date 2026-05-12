@@ -2,6 +2,7 @@ import {
   Browser,
   BrowserContext,
   Page,
+  Response,
 } from 'playwright-core';
 import { v4 as uuidv4 } from 'uuid';
 import { launch as cbLaunch } from 'cloakbrowser';
@@ -18,6 +19,9 @@ import type {
   WaitOptions,
   BrowserStatus,
   PageStatus,
+  TriggerAction,
+  ExpectPageResult,
+  ExpectResponseResult,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -598,6 +602,154 @@ function resolvePage(browserId: string, pageId: string): {
     }
   }
   throw new Error(`Page not found: ${pageId} in browser ${browserId}`);
+}
+
+// ---------------------------------------------------------------------------
+// ExpectPage / ExpectResponse — capture new pages or network responses
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a trigger action on a page.
+ */
+async function executeTriggerAction(page: Page, action: TriggerAction): Promise<void> {
+  switch (action.type) {
+    case 'click':
+      await page.click(action.selector!, {
+        ...action.clickOptions,
+        timeout: action.clickOptions?.timeout || config.defaultTimeout,
+      });
+      break;
+    case 'clickAndNavigate':
+      await Promise.all([
+        page.waitForLoadState('networkidle'),
+        page.click(action.selector!, {
+          ...action.clickOptions,
+          timeout: action.clickOptions?.timeout || config.defaultTimeout,
+        }),
+      ]);
+      break;
+    case 'evaluate':
+      if (action.expression) {
+        const trimmed = action.expression.trim();
+        // Only try Function constructor for actual function definitions
+        if (trimmed.startsWith('function') || trimmed.startsWith('(') || trimmed.startsWith('async')) {
+          try {
+            const fn = new Function(`return (${trimmed})`)();
+            if (typeof fn === 'function') {
+              await page.evaluate(fn, action.arg);
+              return;
+            }
+          } catch {
+            // not a valid function body — fall through to string evaluate
+          }
+        }
+        // Pass raw expression string to browser context
+        await page.evaluate(action.expression);
+      }
+      break;
+  }
+}
+
+/**
+ * Execute a trigger action and capture a newly opened page (e.g. popup / _blank).
+ *
+ * Corresponds to go-playwright's ExtPage.ExpectExtPage.
+ */
+export async function expectPage(
+  browserId: string,
+  pageId: string,
+  action: TriggerAction
+): Promise<ExpectPageResult> {
+  const { ctxRecord, pageRecord, contextId } = resolvePage(browserId, pageId);
+  touchPage(pageRecord);
+
+  // Set up a wait-for-new-page promise before executing the action
+  const newPagePromise = ctxRecord.context.waitForEvent('page');
+
+  // Execute the trigger action
+  await executeTriggerAction(pageRecord.page, action);
+
+  // Wait for the new page (with timeout)
+  const newPage = await Promise.race([
+    newPagePromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout waiting for new page')), config.defaultTimeout)
+    ),
+  ]);
+
+  // Wait for the new page to actually load something
+  await newPage.waitForLoadState('domcontentloaded').catch(() => {});
+
+  // Register the new page in the page map
+  const newPageId = uuidv4();
+  ctxRecord.pages.set(newPageId, {
+    page: newPage,
+    createdAt: Date.now(),
+    lastUsedAt: Date.now(),
+    locked: false,
+    suspended: false,
+  });
+
+  return {
+    pageId: newPageId,
+    contextId,
+    url: newPage.url(),
+  };
+}
+
+/**
+ * Execute a trigger action and capture a matching network response.
+ *
+ * Corresponds to go-playwright's ExtPage.ExpectResponseText.
+ */
+export async function expectResponse(
+  browserId: string,
+  pageId: string,
+  urlOrPattern: string,
+  action: TriggerAction
+): Promise<ExpectResponseResult> {
+  const { pageRecord } = resolvePage(browserId, pageId);
+  touchPage(pageRecord);
+
+  // Build URL predicate
+  const predicate = (response: Response): boolean => {
+    const url = response.url();
+    if (urlOrPattern.endsWith('*')) {
+      return url.startsWith(urlOrPattern.slice(0, -1));
+    }
+    if (urlOrPattern.startsWith('*')) {
+      return url.endsWith(urlOrPattern.slice(1));
+    }
+    return url.includes(urlOrPattern);
+  };
+
+  // Set up wait-for-response before executing the action
+  const responsePromise = pageRecord.page.waitForEvent('response', { predicate });
+
+  // Execute the trigger action
+  await executeTriggerAction(pageRecord.page, action);
+
+  // Wait for the response (with timeout)
+  const response = await Promise.race([
+    responsePromise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`Timeout waiting for response matching: ${urlOrPattern}`)), config.defaultTimeout)
+    ),
+  ]);
+
+  // Collect response data
+  const body = await response.text().catch(() => '');
+  const headers: Record<string, string> = {};
+  for (const [key, value] of Object.entries(response.headers())) {
+    headers[key] = String(value);
+  }
+
+  return {
+    url: response.url(),
+    status: response.status(),
+    headers,
+    body,
+  };
 }
 
 function touchPage(record: PageRecord): void {

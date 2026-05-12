@@ -191,3 +191,38 @@ export interface PageStatus {
   locked: boolean;
   suspended: boolean;
 }
+
+/** An action to execute as part of expect-page / expect-response */
+export interface TriggerAction {
+  /** Action type */
+  type: 'click' | 'clickAndNavigate' | 'evaluate';
+  /** CSS selector (for click/clickAndNavigate) */
+  selector?: string;
+  /** JavaScript expression (for evaluate) */
+  expression?: string;
+  /** Arguments to pass to evaluate */
+  arg?: unknown;
+  /** Click options */
+  clickOptions?: {
+    button?: 'left' | 'right' | 'middle';
+    delay?: number;
+    force?: boolean;
+    timeout?: number;
+    modifiers?: ('Alt' | 'Control' | 'Meta' | 'Shift')[];
+  };
+}
+
+/** Result of expectPage */
+export interface ExpectPageResult {
+  pageId: string;
+  contextId: string;
+  url: string;
+}
+
+/** Result of expectResponse */
+export interface ExpectResponseResult {
+  url: string;
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+}

@@ -2,7 +2,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import * as manager from '../browser/manager.js';
 import { AppError } from '../middleware/error-handler.js';
 import { requireBody, validUrl } from '../middleware/validation.js';
-import type { ApiResponse } from '../browser/types.js';
+import type { ApiResponse, TriggerAction } from '../browser/types.js';
 
 const router = Router();
 
@@ -269,6 +269,47 @@ router.get('/:browserId/:pageId/status', (req: Request, res: Response, next: Nex
     const { browserId, pageId } = getIds(req);
     const status = manager.getPageStatus(browserId, pageId);
     const body: ApiResponse = { success: true, data: status };
+    res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/page/:browserId/:pageId/expect-page
+//   Execute an action and capture a newly opened page (popup / _blank).
+//   Body: { action: { type, selector?, expression?, arg?, clickOptions? } }
+// ---------------------------------------------------------------------------
+router.post('/:browserId/:pageId/expect-page', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { browserId, pageId } = getIds(req);
+    const { action } = req.body;
+    if (!action) throw new AppError('action is required', 400, 'MISSING_ACTION');
+    if (!action.type) throw new AppError('action.type is required', 400, 'MISSING_ACTION_TYPE');
+
+    const result = await manager.expectPage(browserId, pageId, action as TriggerAction);
+    const body: ApiResponse = { success: true, data: result };
+    res.json(body);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/page/:browserId/:pageId/expect-response
+//   Execute an action and capture a matching network response.
+//   Body: { url: string, action: { type, selector?, ... } }
+// ---------------------------------------------------------------------------
+router.post('/:browserId/:pageId/expect-response', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { browserId, pageId } = getIds(req);
+    const { url, action } = req.body;
+    if (!url) throw new AppError('url is required', 400, 'MISSING_URL');
+    if (!action) throw new AppError('action is required', 400, 'MISSING_ACTION');
+    if (!action.type) throw new AppError('action.type is required', 400, 'MISSING_ACTION_TYPE');
+
+    const result = await manager.expectResponse(browserId, pageId, url, action as TriggerAction);
+    const body: ApiResponse = { success: true, data: result };
     res.json(body);
   } catch (err) {
     next(err);
